@@ -15,7 +15,7 @@ Play it: https://schitmuncher.github.io/Vr-Earth/ (open in the Meta Quest Browse
 - Right stick: turn, climb and dive. Settings can switch this to tilting your right hand like a toy plane.
 - Left trigger or X: fire. Aim by pointing your left hand.
 - Left grip: reverse. Left stick: side-slip and lift.
-- B: switch between chase view and open-air view. Y: back to the start.
+- B: switch between first person (you are the plane) and chase view. Y: back to the start.
 
 Hover and route-rail flight styles are in Settings. With a GPX file loaded, the rings follow your track and your best time is saved.
 

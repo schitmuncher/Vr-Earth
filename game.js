@@ -34,7 +34,7 @@ const SETTINGS_KEY = 'openFlight2';
 const DEFAULTS = {
   source: 'free', place: 'snowdon', customLat: 53.067, customLon: -2.521,
   // game
-  flightStyle: 'plane', arcade: true, steer: 'stick', aim: 'hand', leftTrigger: 'fire', view: 'chase',
+  flightStyle: 'plane', arcade: true, steer: 'stick', aim: 'hand', leftTrigger: 'fire', view: 'first', fpTilt: 'gentle', fpWings: true,
   // plane
   planeMaxSpeed: 110, planeIdleSpeed: 25, planeTurn: 55, planePitch: 40, boost: 2, invertPitch: false,
   // hover
@@ -59,7 +59,9 @@ const SCHEMA = [
   { key: 'steer', label: 'Steer the plane with', options: [['stick', 'Right thumbstick'], ['hand', 'Right hand tilt']] },
   { key: 'aim', label: 'Aim guns with', options: [['hand', 'Left hand pointing'], ['nose', 'Plane nose / where you look']] },
   { key: 'leftTrigger', label: 'Left trigger does', options: [['fire', 'Fire (X also fires)'], ['reverse', 'Reverse / brake (X fires)']] },
-  { key: 'view', label: 'Plane view', options: [['chase', 'Chase (see your plane)'], ['first', 'Open air (no plane)']] },
+  { key: 'view', label: 'Plane view (B switches)', options: [['first', 'First person (you are the plane)'], ['chase', 'Chase (see your plane)']] },
+  { key: 'fpTilt', label: 'First person: world tilts when you bank', options: [['level', 'Off (most comfortable)'], ['gentle', 'Gentle'], ['full', 'Full (real plane feel)']] },
+  { key: 'fpWings', label: 'First person: show wing tips', type: 'bool' },
 
   { group: 'Plane' },
   { key: 'planeMaxSpeed', label: 'Top speed (m/s)', min: 30, max: 400, step: 5 },
@@ -109,6 +111,7 @@ function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
     for (const k of Object.keys(DEFAULTS)) if (typeof saved[k] === typeof DEFAULTS[k]) S[k] = saved[k];
+    if (!('fpTilt' in saved)) S.view = 'first';
   } catch (e) { /* ignore corrupt settings */ }
 }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(S)); } catch (e) { /* storage blocked */ } }
@@ -575,6 +578,27 @@ const plane = (() => {
   rig.add(g);
   return g;
 })();
+
+// first person: just the two wing tips, out at the edge of your view
+const _eye = V(), _upEye = new THREE.Vector3(0, 1.6, 0);
+const wings = (() => {
+  const g = new THREE.Group();
+  const white = new THREE.MeshLambertMaterial({ color: 0xf4f1e8 }), red = new THREE.MeshLambertMaterial({ color: 0xe23b2e });
+  for (const side of [-1, 1]) {
+    const w = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.08, 0.9), white); w.position.set(side * 2.1, 0, 0); g.add(w);
+    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.1, 0.92), red); tip.position.set(side * 3.3, 0, 0); g.add(tip);
+  }
+  g.position.set(0, 0.9, -0.2);   // below and beside you: glance left or right to see them
+  g.visible = false;
+  rig.add(g);
+  return g;
+})();
+function updateWings() {
+  if (!wings.visible) return;
+  // the wings always show the plane's true bank, even when the world is kept level
+  const tilt = ({ level: 0, gentle: 0.5, full: 1 })[S.fpTilt] ?? 0;
+  wings.rotation.set(P.pitch * (1 - tilt) * 0.3, 0, P.roll * (1 - tilt), 'YXZ');
+}
 
 // ====================================================================
 // Sound and haptics
@@ -1222,7 +1246,7 @@ function frame() {
   W.time += dt;
   const inp = readInput();
 
-  if (inp.pressed.b) { S.view = S.view === 'chase' ? 'first' : 'chase'; saveSettings(); flash(S.view === 'chase' ? 'Chase view' : 'Open air view', 1200); }
+  if (inp.pressed.b) { S.view = S.view === 'chase' ? 'first' : 'chase'; saveSettings(); flash(S.view === 'chase' ? 'Chase view' : 'First person', 1200); }
   if (inp.pressed.y) { respawn(); buildCourse(); flash('Back to the start', 1500); }
 
   if (W.placed) {
@@ -1231,14 +1255,23 @@ function frame() {
     else updateHover(dt, inp);
     keepAboveGround();
   }
-  rig.position.copy(P.pos);
-  rig.rotation.set(0, P.yaw, 0);
-  if (W.mode === 'screen') camera.rotation.set(P.pitch * 0.5, 0, P.roll * 0.25);
+  const fp = S.flightStyle === 'plane' && S.view === 'first';
+  const tilt = fp ? ({ level: 0, gentle: 0.5, full: 1 })[S.fpTilt] ?? 0 : 0;
+  rig.rotation.set(P.pitch * tilt, P.yaw, P.roll * tilt, 'YXZ');
+  // pivot around your head rather than your feet, so banking doesn't swing you sideways
+  _eye.set(0, 1.6, 0).applyEuler(rig.rotation);
+  rig.position.copy(P.pos).add(_upEye).sub(_eye);
+  wings.visible = fp && S.fpWings;
+  if (W.mode === 'screen') {
+    if (fp) camera.rotation.set(P.pitch * (1 - tilt), 0, P.roll * 0.6 * (1 - tilt));
+    else camera.rotation.set(P.pitch * 0.5, 0, P.roll * 0.25);
+  }
   rig.updateMatrixWorld(true);
 
   if (W.tilesMode) tilesUpdate(dt); else terrainUpdate(false);
   placeOnceGroundKnown();
 
+  updateWings();
   updateAim();
   updateTargets(dt);
   updateBullets(dt, W.placed && (S.leftTrigger === 'fire' ? inp.tL > 0.4 || inp.x : inp.x));
@@ -1395,7 +1428,8 @@ function buildHelp() {
     ${S.steer === 'hand' ? 'Right hand: hold it flat like a toy plane. Bank it to turn, tip it to climb or dive.' : 'Right stick: turn left/right, pull back to climb, push to dive.'}<br>
     ${fireOnTrigger ? 'Left trigger (or X): fire. Left grip: reverse.' : 'Left trigger: reverse. X: fire.'}<br>
     ${S.aim === 'hand' ? 'Aim by pointing your left hand. The red dot shows where shots go.' : 'Shots go where the plane points.'}<br>
-    Left stick: side-slip and extra lift. B: switch view. Y: back to the start.<br><br>
+    Left stick: side-slip and extra lift. B: switch between first person and chase view. Y: back to the start.<br>
+    In first person you are the plane. Settings can make the world tilt as you bank, from Off to Full.<br><br>
     <b>Hover</b><br>
     Right trigger: fly where you look. ${fireOnTrigger ? 'Left grip' : 'Left trigger'}: backwards. Left stick: strafe and height. Right stick: turn.<br><br>
     <b>Route rail</b> (GPX loaded)<br>
