@@ -6,11 +6,12 @@ A standalone WebXR flight game for Meta Quest, flying over Google Photorealistic
 
 1. Turn on GitHub Pages for this repo (Settings → Pages → deploy from the `main` branch).
 2. Open the Pages URL in the Meta Quest Browser.
-3. Paste your Google Maps API key on the Flight tab and press Save. It's stored only in that browser on that device.
-4. Optionally load one or more GPX files and pick a route.
-5. Press Enter VR.
-
-Restrict your API key in Google Cloud to the Map Tiles API and to your Pages URL as the website restriction.
+3. On the Flight tab, pick a Map source:
+   - **Google Maps:** paste a Google Maps API key. Needs a Google Cloud billing account. Restrict the key to the Map Tiles API and your Pages URL.
+   - **Cesium ion:** paste a Cesium ion access token from a free cesium.com account. No billing needed. Serves the same Google 3D data with a free monthly allowance.
+4. Press Save keys. Keys are stored only in that browser on that device.
+5. Optionally load one or more GPX files and pick a route.
+6. Press Enter VR.
 
 ## Controls
 
