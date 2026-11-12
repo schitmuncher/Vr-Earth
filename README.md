@@ -1,26 +1,29 @@
 # Open Flight
 
-A standalone WebXR flight game for Meta Quest, flying over Google Photorealistic 3D Tiles. No helmet or drone frame.
+Fly a plane over the real world on a Meta Quest, standalone, in the browser. Pop balloons, shoot down drones and race through rings.
 
-## Setup
+Play it: https://schitmuncher.github.io/Vr-Earth/ (open in the Meta Quest Browser and press Enter VR).
 
-1. Turn on GitHub Pages for this repo (Settings → Pages → deploy from the `main` branch).
-2. Open the Pages URL in the Meta Quest Browser.
-3. On the Flight tab, pick a Map source:
-   - **Google Maps:** paste a Google Maps API key. Needs a Google Cloud billing account. Restrict the key to the Map Tiles API and your Pages URL.
-   - **Cesium ion:** paste a Cesium ion access token from a free cesium.com account. No billing needed. Serves the same Google 3D data with a free monthly allowance.
-4. Press Save keys. Keys are stored only in that browser on that device.
-5. Optionally load one or more GPX files and pick a route.
-6. Press Enter VR.
+## Maps
 
-## Controls
+- **Free world terrain (default):** needs no key and no account. Real elevation with satellite imagery.
+- **Google photorealistic 3D:** paste a Google Maps key (needs a Google Cloud billing account), or a free Cesium ion token. Keys are stored only in the browser on that device.
 
-- Right trigger (hold): fly forward, or advance along the route.
-- Left trigger (hold): fly backward, or go back along the route.
-- Left stick: strafe and altitude.
-- Right stick: turn.
-- Grip (either hand): pause.
+## Controls (Quest)
 
-## Tuning
+- Right trigger: throttle. A: boost. Right grip: stop and hover.
+- Right stick: turn, climb and dive. Settings can switch this to tilting your right hand like a toy plane.
+- Left trigger or X: fire. Aim by pointing your left hand.
+- Left grip: reverse. Left stick: side-slip and lift.
+- B: switch between chase view and open-air view. Y: back to the start.
 
-The Settings tab changes speeds, controls, route height, and graphics quality. Changes save on the device. Use Export and Import to copy your settings to another device.
+Hover and route-rail flight styles are in Settings. With a GPX file loaded, the rings follow your track and your best time is saved.
+
+"Play on this screen" runs the same game with a keyboard or touch, without a headset.
+
+## Credits
+
+- Elevation: Terrain Tiles (Mapzen, AWS Open Data).
+- Imagery: Sentinel-2 cloudless (https://cloudless.eox.at) by EOX IT Services GmbH, contains modified Copernicus Sentinel data 2020.
+- Google 3D map data © Google.
+- Libraries: see `lib/NOTICE.md`.

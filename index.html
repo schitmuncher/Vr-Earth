@@ -2,16 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>Open Flight</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #0b1620; color: #e8f0f5; font-family: system-ui, sans-serif; }
-  #setup { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 12px; box-sizing: border-box; }
-  #panel { max-width: 620px; width: 100%; max-height: 96vh; overflow-y: auto; background: #13232f; border-radius: 12px; padding: 20px; box-sizing: border-box; }
-  h1 { font-size: 1.4rem; margin: 0 0 4px; }
-  .sub { font-size: .85rem; opacity: .7; margin-bottom: 10px; }
+  html, body { margin: 0; height: 100%; background: #0b1620; color: #e8f0f5; font-family: system-ui, sans-serif; overscroll-behavior: none; }
+  #setup { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 12px; box-sizing: border-box; z-index: 5; }
+  #panel { max-width: 640px; width: 100%; max-height: 96vh; overflow-y: auto; background: #13232f; border-radius: 14px; padding: 20px; box-sizing: border-box; }
+  h1 { font-size: 1.5rem; margin: 0 0 2px; }
+  .sub { font-size: .85rem; opacity: .7; margin-bottom: 12px; }
   label { display: block; margin: 14px 0 6px; font-size: .9rem; opacity: .85; }
-  input[type=password], input[type=file], select, textarea {
+  input[type=password], input[type=number], input[type=file], select, textarea {
     width: 100%; box-sizing: border-box; padding: 10px; border-radius: 8px;
     border: 1px solid #2d4a5c; background: #0b1620; color: inherit; font-size: 1rem;
   }
@@ -28,71 +28,83 @@
   .tabs { display: flex; gap: 8px; margin-bottom: 6px; }
   .hidden { display: none !important; }
   #status { margin-top: 14px; font-size: .9rem; min-height: 1.3em; color: #9fd8ff; word-break: break-word; }
-  .help { margin-top: 14px; font-size: .8rem; opacity: .65; line-height: 1.5; }
+  .help { font-size: .85rem; opacity: .85; line-height: 1.6; }
+  .help b { color: #9fd8ff; }
   .group { margin-top: 18px; font-weight: 600; color: #9fd8ff; font-size: .9rem; border-bottom: 1px solid #2d4a5c; padding-bottom: 4px; }
   .srow { display: grid; grid-template-columns: 1fr 150px 56px; gap: 8px; align-items: center; margin: 10px 0; font-size: .85rem; }
   .srow input[type=range] { width: 100%; }
   .srow input[type=checkbox] { width: 22px; height: 22px; justify-self: start; }
+  .srow select { grid-column: 2 / 4; padding: 6px; font-size: .85rem; }
   .val { text-align: right; font-variant-numeric: tabular-nums; opacity: .9; }
   .note { font-size: .78rem; opacity: .6; margin-top: 8px; line-height: 1.4; }
-  #scene-canvas { display: none; }
+  .note a { color: #9fd8ff; }
+  #scene-canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: none; touch-action: none; }
+  #overlay { position: fixed; left: 0; right: 0; top: 0; padding: 8px; display: none; z-index: 4; pointer-events: none; font-size: .8rem; }
+  #overlay button { pointer-events: auto; width: auto; margin: 0; padding: 8px 14px; font-size: .9rem; }
+  #overlay span { margin-left: 10px; text-shadow: 0 1px 3px #000; }
 </style>
 <script type="importmap">
-{
-  "imports": {
-    "three": "https://esm.sh/three@0.160.0",
-    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
-    "3d-tiles-renderer": "https://esm.sh/3d-tiles-renderer?deps=three@0.160.0",
-    "3d-tiles-renderer/plugins": "https://esm.sh/3d-tiles-renderer/plugins?deps=three@0.160.0"
-  }
-}
+{ "imports": { "three": "./lib/three.module.min.js" } }
 </script>
 </head>
 <body>
 
+<div id="overlay"><button id="exitBtn" class="sec">Menu</button><span id="hint"></span></div>
+
 <div id="setup">
   <div id="panel">
     <h1>Open Flight</h1>
-    <div class="sub">Google 3D terrain on Meta Quest, standalone WebXR</div>
+    <div class="sub">Fly a plane over the real world, pop balloons, chase drones and race through rings. Meta Quest, standalone.</div>
 
     <div class="tabs">
-      <button id="tabFlight" class="tab on">Flight</button>
+      <button id="tabFlight" class="tab on">Fly</button>
       <button id="tabSettings" class="tab">Settings</button>
+      <button id="tabHelp" class="tab">Controls</button>
     </div>
 
-    <!-- FLIGHT TAB -->
+    <!-- FLY TAB -->
     <div id="flightView">
-      <label for="source">Map source</label>
+      <label for="source">Map</label>
       <select id="source">
-        <option value="google">Google Maps (billing account and key needed)</option>
-        <option value="cesium">Cesium ion (free account, no billing)</option>
+        <option value="free">Free world terrain (no key, no account)</option>
+        <option value="google">Google photorealistic 3D (Google Maps key)</option>
+        <option value="cesium">Google photorealistic 3D via Cesium ion (free token)</option>
       </select>
 
-      <label for="key">Google Maps API key</label>
-      <input id="key" type="password" placeholder="Paste your Google key" autocomplete="off" spellcheck="false">
-
-      <label for="cesiumKey">Cesium ion access token</label>
-      <input id="cesiumKey" type="password" placeholder="Paste your Cesium token" autocomplete="off" spellcheck="false">
-
-      <div class="row">
-        <button id="save" class="sec">Save keys on this device</button>
+      <div id="googleBox" class="hidden">
+        <label for="key">Google Maps API key</label>
+        <input id="key" type="password" placeholder="Paste your Google key" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="cesiumBox" class="hidden">
+        <label for="cesiumKey">Cesium ion access token</label>
+        <input id="cesiumKey" type="password" placeholder="Paste your Cesium token" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="keyButtons" class="row hidden">
+        <button id="save" class="sec">Save key on this device</button>
         <button id="forget" class="sec">Forget keys</button>
       </div>
 
-      <label for="gpx">GPX routes (optional, load before entering VR)</label>
-      <input id="gpx" type="file" accept=".gpx" multiple>
+      <label for="place">Where to fly</label>
+      <select id="place"></select>
+      <div id="customBox" class="row hidden">
+        <input id="customLat" type="number" step="any" placeholder="Latitude, e.g. 53.07">
+        <input id="customLon" type="number" step="any" placeholder="Longitude, e.g. -2.52">
+      </div>
 
-      <label for="route">Route</label>
-      <select id="route"><option value="-1">Free flight (no route)</option></select>
+      <label for="gpx">GPX routes (optional). A route becomes a ring race along your track.</label>
+      <input id="gpx" type="file" accept=".gpx" multiple>
+      <select id="route" style="margin-top:8px"><option value="-1">No route (fly anywhere)</option></select>
+
+      <button id="enter">Enter VR</button>
+      <button id="screen" class="sec">Play on this screen (no headset)</button>
     </div>
 
     <!-- SETTINGS TAB -->
     <div id="settingsView" class="hidden">
-      <div class="note">Changes apply straight away and are saved on this device. Exit VR and re-enter to test render scale changes.</div>
+      <div class="note">Changes save on this device and apply straight away. Map and graphics changes apply the next time you start flying.</div>
       <div id="settingsBox"></div>
-
       <label for="json">Backup (copy to keep your settings, paste to restore)</label>
-      <textarea id="json" rows="6" spellcheck="false"></textarea>
+      <textarea id="json" rows="5" spellcheck="false"></textarea>
       <div class="row">
         <button id="exportBtn" class="sec">Export</button>
         <button id="importBtn" class="sec">Import</button>
@@ -100,581 +112,27 @@
       </div>
     </div>
 
-    <button id="enter">Enter VR</button>
-    <div id="status"></div>
+    <!-- HELP TAB -->
+    <div id="helpView" class="hidden">
+      <div id="helpText" class="help"></div>
+    </div>
 
-    <div class="help">
-      Right trigger (hold): fly forward, or advance along the route.<br>
-      Left trigger (hold): fly backward, or go back along the route.<br>
-      Left stick: strafe left/right and altitude up/down.<br>
-      Right stick: turn.<br>
-      Grip (either hand): pause.
+    <div id="status"></div>
+    <div class="note">
+      Free terrain: elevation from <a href="https://registry.opendata.aws/terrain-tiles/">Terrain Tiles</a> (Mapzen, AWS Open Data).
+      Imagery: <a href="https://cloudless.eox.at">Sentinel-2 cloudless</a> by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2020).
+      Google 3D map data © Google.
     </div>
   </div>
 </div>
 
-<script type="module">
-import * as THREE from 'three';
-import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
-import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
-import { TilesRenderer } from '3d-tiles-renderer';
-import { GoogleCloudAuthPlugin, CesiumIonAuthPlugin, GLTFExtensionsPlugin } from '3d-tiles-renderer/plugins';
-
-// ---------- constants that never change ----------
-const ROOT_URL = 'https://tile.googleapis.com/v1/3dtiles/root.json';
-const CESIUM_GOOGLE_ASSET = '2275207';   // Google Photorealistic 3D Tiles, served through Cesium ion
-const DEG = Math.PI / 180;
-const EARTH_R = 6378137;
-const DEFAULT_START = { lat: 53.0789, lon: -2.5210 }; // Nantwich
-const SETTINGS_KEY = 'openFlightSettings';
-const UP = new THREE.Vector3(0, 1, 0);
-
-// ---------- tunable settings ----------
-const DEFAULTS = {
-  tileSource: 'google',  // 'google' (Maps key) or 'cesium' (Cesium ion token)
-  maxFreeSpeed: 60,      // m/s at full trigger, free flight
-  strafeSpeed: 12,       // m/s, left stick sideways
-  altSpeed: 12,          // m/s, left stick up/down
-  smoothing: 3,          // acceleration response (higher = snappier)
-  triggerCurve: 2,       // 1 = linear, 2 = fine control near zero, 3 = very fine
-  maxRouteSpeed: 60,     // m/s along a route at full trigger
-  clearance: 40,         // metres above the route's ground reference
-  defaultAlt: 150,       // free-flight start height in metres
-  routeLimit: 300,       // max side offset from the route, metres
-  showRoute: true,
-  turnSpeed: 90,         // degrees per second, right stick
-  deadzone: 0.15,
-  invertLeftY: false,
-  invertTurn: false,
-  renderScale: 0.9,      // lower = faster on Quest 2
-  errorTarget: 24        // tile error target: lower = sharper, slower
-};
-
-const SCHEMA = [
-  { group: 'Free flight' },
-  { key: 'maxFreeSpeed', label: 'Top speed (m/s)', min: 5, max: 300, step: 1 },
-  { key: 'strafeSpeed', label: 'Strafe speed (m/s)', min: 1, max: 50, step: 0.5 },
-  { key: 'altSpeed', label: 'Climb / descend speed (m/s)', min: 1, max: 50, step: 0.5 },
-  { key: 'smoothing', label: 'Acceleration response', min: 0.5, max: 10, step: 0.5 },
-  { key: 'triggerCurve', label: 'Trigger curve (1 linear, 3 very fine)', min: 1, max: 3, step: 0.1 },
-
-  { group: 'Routes (GPX)' },
-  { key: 'maxRouteSpeed', label: 'Top speed along route (m/s)', min: 5, max: 300, step: 1 },
-  { key: 'clearance', label: 'Height above route ground (m)', min: 0, max: 300, step: 5 },
-  { key: 'defaultAlt', label: 'Free-flight start height (m)', min: 20, max: 2000, step: 10 },
-  { key: 'routeLimit', label: 'Max side offset from route (m)', min: 10, max: 1000, step: 10 },
-  { key: 'showRoute', label: 'Show route line', type: 'bool' },
-
-  { group: 'Controls' },
-  { key: 'turnSpeed', label: 'Turn speed (deg/s)', min: 15, max: 180, step: 5 },
-  { key: 'deadzone', label: 'Stick deadzone', min: 0, max: 0.4, step: 0.01 },
-  { key: 'invertLeftY', label: 'Invert left stick up/down', type: 'bool' },
-  { key: 'invertTurn', label: 'Invert turn direction', type: 'bool' },
-
-  { group: 'Graphics' },
-  { key: 'renderScale', label: 'Render scale (applies on Enter VR)', min: 0.5, max: 1.5, step: 0.05 },
-  { key: 'errorTarget', label: 'Tile error target (lower = sharper)', min: 6, max: 64, step: 1 }
-];
-
-// load saved settings, keeping only known keys with the right type
-const S = { ...DEFAULTS };
-function loadSettings() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
-    for (const k of Object.keys(DEFAULTS)) {
-      if (typeof saved[k] === typeof DEFAULTS[k]) S[k] = saved[k];
-    }
-  } catch (e) { /* ignore corrupt settings */ }
-}
-function saveSettings() {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(S));
-}
-
-const $ = id => document.getElementById(id);
-const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-const curve = t => Math.sign(t) * Math.pow(Math.abs(t), S.triggerCurve);
-const dzone = v => Math.abs(v) < S.deadzone ? 0 : (v - Math.sign(v) * S.deadzone) / (1 - S.deadzone);
-
-// ---------- logging (also shown inside the headset) ----------
-const logLines = [];
-function log(msg) {
-  console.log(msg);
-  logLines.push(msg);
-  if (logLines.length > 6) logLines.shift();
-  $('status').textContent = msg;
-}
-window.addEventListener('error', e => log('Error: ' + e.message));
-window.addEventListener('unhandledrejection', e => log('Error: ' + (e.reason?.message ?? e.reason)));
-
-// ---------- three.js setup ----------
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(1);
-renderer.xr.enabled = true;
-renderer.domElement.id = 'scene-canvas';
-document.body.appendChild(renderer.domElement);
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x9ccbf0);
-scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
-const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-sun.position.set(1, 2, 1);
-scene.add(sun);
-
-const camera = new THREE.PerspectiveCamera(70, 1, 0.5, 2e7);
-const rig = new THREE.Group();          // moving "dolly" the headset sits on
-rig.add(camera);
-scene.add(rig);
-
-const clock = new THREE.Clock();
-const state = { vel: new THREE.Vector3(), routeS: 0, yawOffset: 0, latOffset: 0, altOffset: 0, speed: 0 };
-
-// ---------- HUD: floating panel so status and errors show in VR ----------
-const hudCanvas = document.createElement('canvas');
-hudCanvas.width = 768; hudCanvas.height = 384;
-const hctx = hudCanvas.getContext('2d');
-const hudTex = new THREE.CanvasTexture(hudCanvas);
-const hud = new THREE.Mesh(
-  new THREE.PlaneGeometry(0.9, 0.45),
-  new THREE.MeshBasicMaterial({ map: hudTex, transparent: true, depthTest: false })
-);
-hud.renderOrder = 999;
-scene.add(hud);
-let hudTimer = 0;
-const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _f = new THREE.Vector3();
-
-function updateHud(dt) {
-  camera.getWorldPosition(_p);
-  camera.getWorldQuaternion(_q);
-  camera.getWorldDirection(_f);
-  hud.position.copy(_p).addScaledVector(_f, 1.3).addScaledVector(UP, -0.25);
-  hud.quaternion.copy(_q);
-
-  hudTimer -= dt;
-  if (hudTimer > 0) return;
-  hudTimer = 0.2;
-
-  hctx.fillStyle = 'rgba(10, 20, 30, 0.85)';
-  hctx.fillRect(0, 0, hudCanvas.width, hudCanvas.height);
-  hctx.fillStyle = '#e8f4ff';
-  hctx.font = 'bold 32px sans-serif';
-  const lines = [
-    activeRoute ? `Route: ${activeRoute.name}` : 'Free flight',
-    `Speed ${(state.speed * 3.6).toFixed(0)} km/h   Height ${Math.round(rig.position.y)} m`,
-    activeRoute ? `Progress ${(100 * state.routeS / activeRoute.total).toFixed(1)}%` : 'Hold right trigger to fly forward',
-    S.tileSource === 'cesium' ? 'Map data: Google, via Cesium ion' : 'Map data: Google',
-    ...logLines.slice(-2)
-  ];
-  lines.forEach((t, i) => hctx.fillText(t.slice(0, 44), 24, 60 + i * 58));
-  hudTex.needsUpdate = true;
-}
-
-// ---------- 3D Tiles (Google Photorealistic 3D) ----------
-let tiles = null;
-let tilesKey = null;
-let activeRoute = null;
-let routeMesh = null;
-
-function setOrigin(o) {
-  if (tiles) tiles.setLatLonToYUp(o.lat * DEG, o.lon * DEG);
-}
-
-function createTiles(source, token) {
-  const id = source + ':' + token;
-  if (tiles && tilesKey === id) return;
-  if (tiles) { scene.remove(tiles.group); tiles.dispose(); }
-
-  if (source === 'cesium') {
-    tiles = new TilesRenderer();
-    tiles.registerPlugin(new CesiumIonAuthPlugin({
-      apiToken: token,
-      assetId: CESIUM_GOOGLE_ASSET,
-      autoRefreshToken: true
-    }));
-  } else {
-    tiles = new TilesRenderer(ROOT_URL);
-    tiles.registerPlugin(new GoogleCloudAuthPlugin({
-      apiToken: token,
-      autoRefreshToken: true,
-      useRecommendedSettings: true
-    }));
-  }
-  const draco = new DRACOLoader().setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
-  const ktx = new KTX2Loader()
-    .setTranscoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/basis/')
-    .detectSupport(renderer);
-  tiles.registerPlugin(new GLTFExtensionsPlugin({ dracoLoader: draco, ktxLoader: ktx }));
-  tiles.errorTarget = S.errorTarget;
-  tiles.addEventListener('load-error', e => log('Tile error: ' + (e.error?.message ?? 'failed to load')));
-  scene.add(tiles.group);
-  tilesKey = id;
-}
-
-// ---------- GPX parsing ----------
-function parseGpx(text, name) {
-  const doc = new DOMParser().parseFromString(text, 'application/xml');
-  if (doc.getElementsByTagName('parsererror').length) throw new Error('not valid XML');
-  let nodes = [...doc.getElementsByTagName('trkpt')];
-  if (!nodes.length) nodes = [...doc.getElementsByTagName('rtept')];
-  if (!nodes.length) nodes = [...doc.getElementsByTagName('wpt')];
-  let pts = nodes.map(n => ({
-    lat: parseFloat(n.getAttribute('lat')),
-    lon: parseFloat(n.getAttribute('lon')),
-    ele: parseFloat(n.getElementsByTagName('ele')[0]?.textContent)
-  })).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon));
-  if (pts.length < 2) throw new Error('needs at least 2 points');
-
-  // thin very long tracks so they stay smooth on the Quest
-  const stride = Math.max(1, Math.ceil(pts.length / 20000));
-  pts = pts.filter((_, i) => i % stride === 0);
-
-  const o = pts[0];
-  const local = pts.map(p => ({
-    x: (p.lon - o.lon) * DEG * EARTH_R * Math.cos(o.lat * DEG),
-    z: -(p.lat - o.lat) * DEG * EARTH_R   // north is -Z
-  }));
-  const cum = [0];
-  for (let i = 1; i < local.length; i++) {
-    cum.push(cum[i - 1] + Math.hypot(local[i].x - local[i - 1].x, local[i].z - local[i - 1].z));
-  }
-  const e0 = Number.isFinite(pts[0].ele) ? pts[0].ele : 0;
-  const heights = pts.map(p => Number.isFinite(p.ele) ? p.ele - e0 : null);
-  return {
-    name,
-    origin: { lat: o.lat, lon: o.lon },
-    pts: local,
-    cum,
-    total: cum[cum.length - 1],
-    heights
-  };
-}
-
-// position along a route at distance s
-function routeAt(r, s) {
-  const cum = r.cum;
-  let lo = 0, hi = cum.length - 2;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (cum[mid] <= s) lo = mid; else hi = mid - 1;
-  }
-  const a = r.pts[lo], b = r.pts[lo + 1];
-  const seg = (cum[lo + 1] - cum[lo]) || 1;
-  const t = clamp((s - cum[lo]) / seg, 0, 1);
-  const dX = b.x - a.x, dZ = b.z - a.z;
-  const len = Math.hypot(dX, dZ) || 1;
-  const ha = r.heights[lo], hb = r.heights[lo + 1];
-  const ground = (ha != null && hb != null) ? ha + (hb - ha) * t : (ha ?? hb ?? 0);
-  return {
-    x: a.x + dX * t,
-    z: a.z + dZ * t,
-    ground,
-    dirX: dX / len,
-    dirZ: dZ / len,
-    yaw: Math.atan2(-dX, -dZ)
-  };
-}
-
-function setActiveRoute(r) {
-  activeRoute = r;
-  if (routeMesh) { scene.remove(routeMesh); routeMesh.geometry.dispose(); routeMesh = null; }
-  if (r) {
-    const pos = [];
-    r.pts.forEach((p, i) => pos.push(p.x, (r.heights[i] ?? 0) + S.clearance, p.z));
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    routeMesh = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffcc33 }));
-    routeMesh.visible = S.showRoute;
-    scene.add(routeMesh);
-  }
-  setOrigin(r ? r.origin : DEFAULT_START);
-  log(r ? `Route selected: ${r.name}` : 'Free flight selected.');
-}
-
-// ---------- settings UI ----------
-function applySetting(key) {
-  if (key === 'errorTarget' && tiles) tiles.errorTarget = S.errorTarget;
-  if (key === 'showRoute' && routeMesh) routeMesh.visible = S.showRoute;
-}
-
-function setSetting(key, value) {
-  S[key] = value;
-  saveSettings();
-  applySetting(key);
-}
-
-function buildSettingsUI() {
-  const box = $('settingsBox');
-  box.innerHTML = '';
-  for (const item of SCHEMA) {
-    if (item.group) {
-      const g = document.createElement('div');
-      g.className = 'group';
-      g.textContent = item.group;
-      box.appendChild(g);
-      continue;
-    }
-    const row = document.createElement('div');
-    row.className = 'srow';
-    const label = document.createElement('span');
-    label.textContent = item.label;
-    row.appendChild(label);
-
-    if (item.type === 'bool') {
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = !!S[item.key];
-      cb.onchange = () => setSetting(item.key, cb.checked);
-      row.appendChild(cb);
-      row.appendChild(document.createElement('span'));
-    } else {
-      const slider = document.createElement('input');
-      slider.type = 'range';
-      slider.min = item.min; slider.max = item.max; slider.step = item.step;
-      slider.value = S[item.key];
-      const val = document.createElement('span');
-      val.className = 'val';
-      val.textContent = S[item.key];
-      slider.oninput = () => {
-        const v = Number(slider.value);
-        val.textContent = v;
-        setSetting(item.key, v);
-      };
-      row.appendChild(slider);
-      row.appendChild(val);
-    }
-    box.appendChild(row);
-  }
-}
-
-function resetSettings() {
-  Object.assign(S, DEFAULTS);
-  saveSettings();
-  if (tiles) tiles.errorTarget = S.errorTarget;
-  if (routeMesh) routeMesh.visible = S.showRoute;
-  syncSourceUI();
-  buildSettingsUI();
-  log('Settings reset to defaults.');
-}
-
-function exportSettings() {
-  $('json').value = JSON.stringify(S, null, 2);
-  log('Settings exported to the box below.');
-}
-
-function importSettings() {
-  try {
-    const incoming = JSON.parse($('json').value);
-    let count = 0;
-    for (const k of Object.keys(DEFAULTS)) {
-      if (typeof incoming[k] === typeof DEFAULTS[k]) { S[k] = incoming[k]; count++; }
-    }
-    saveSettings();
-    if (tiles) tiles.errorTarget = S.errorTarget;
-    if (routeMesh) routeMesh.visible = S.showRoute;
-    syncSourceUI();
-    buildSettingsUI();
-    log(`Imported ${count} settings.`);
-  } catch (e) {
-    log('Import failed: paste the exported JSON first.');
-  }
-}
-
-// tabs
-function showTab(which) {
-  const flight = which === 'flight';
-  $('flightView').classList.toggle('hidden', !flight);
-  $('settingsView').classList.toggle('hidden', flight);
-  $('tabFlight').classList.toggle('on', flight);
-  $('tabSettings').classList.toggle('on', !flight);
-}
-$('tabFlight').onclick = () => showTab('flight');
-$('tabSettings').onclick = () => showTab('settings');
-$('resetBtn').onclick = resetSettings;
-$('exportBtn').onclick = exportSettings;
-$('importBtn').onclick = importSettings;
-
-// ---------- setup UI ----------
-const keyInput = $('key');
-const cesiumInput = $('cesiumKey');
-keyInput.value = localStorage.getItem('gmapsKey') || '';
-cesiumInput.value = localStorage.getItem('cesiumToken') || '';
-$('source').onchange = e => setSetting('tileSource', e.target.value);
-$('save').onclick = () => {
-  localStorage.setItem('gmapsKey', keyInput.value.trim());
-  localStorage.setItem('cesiumToken', cesiumInput.value.trim());
-  log('Keys saved on this device.');
-};
-$('forget').onclick = () => {
-  localStorage.removeItem('gmapsKey');
-  localStorage.removeItem('cesiumToken');
-  keyInput.value = '';
-  cesiumInput.value = '';
-  log('Keys removed from this device.');
-};
-function syncSourceUI() {
-  $('source').value = S.tileSource;
-}
-
-const routes = [];
-$('gpx').onchange = async e => {
-  for (const f of e.target.files) {
-    try {
-      routes.push(parseGpx(await f.text(), f.name));
-      log(`Loaded ${f.name}`);
-    } catch (err) {
-      log(`Could not read ${f.name}: ${err.message}`);
-    }
-  }
-  e.target.value = '';
-  refreshRouteList();
-};
-
-function refreshRouteList() {
-  const sel = $('route');
-  sel.innerHTML = '';
-  sel.add(new Option('Free flight (no route)', '-1'));
-  routes.forEach((r, i) => sel.add(new Option(`${r.name} (${(r.total / 1000).toFixed(1)} km)`, String(i))));
-  sel.value = activeRoute ? String(routes.indexOf(activeRoute)) : '-1';
-}
-
-$('route').onchange = e => {
-  const i = Number(e.target.value);
-  setActiveRoute(i < 0 ? null : routes[i]);
-};
-
-// ---------- controller input ----------
-function readInput() {
-  const out = { lx: 0, ly: 0, rx: 0, ry: 0, tf: 0, tb: 0, grip: false };
-  const session = renderer.xr.getSession();
-  if (!session) return out;
-  for (const src of session.inputSources) {
-    const gp = src.gamepad;
-    if (!gp) continue;
-    const ax = gp.axes, bt = gp.buttons;
-    const o = ax.length >= 4 ? 2 : 0;          // thumbstick is axes 2/3 on Quest
-    const x = dzone(ax[o] ?? 0);
-    const y = dzone(ax[o + 1] ?? 0);
-    if (src.handedness === 'left') {
-      out.lx = x;
-      out.ly = S.invertLeftY ? -y : y;
-      out.tb = bt[0]?.value ?? 0;
-    } else if (src.handedness === 'right') {
-      out.rx = S.invertTurn ? -x : x;
-      out.ry = y;
-      out.tf = bt[0]?.value ?? 0;
-    }
-    if (bt[1]?.pressed) out.grip = true;
-  }
-  return out;
-}
-
-// ---------- movement ----------
-function updateFree(dt, inp) {
-  const fwd = new THREE.Vector3();
-  camera.getWorldDirection(fwd);
-  const right = new THREE.Vector3().crossVectors(fwd, UP);
-  if (right.lengthSq() < 1e-6) right.set(1, 0, 0);
-  right.normalize();
-
-  const speed = curve(inp.tf - inp.tb) * S.maxFreeSpeed;
-  const target = fwd.multiplyScalar(speed)
-    .addScaledVector(right, inp.lx * S.strafeSpeed)
-    .addScaledVector(UP, -inp.ly * S.altSpeed);
-  if (inp.grip) target.set(0, 0, 0);
-
-  state.vel.lerp(target, 1 - Math.exp(-dt * S.smoothing));   // smooth acceleration and braking
-  rig.position.addScaledVector(state.vel, dt);
-  rig.rotateY(-inp.rx * S.turnSpeed * DEG * dt);
-  state.speed = state.vel.length();
-}
-
-function updateRoute(dt, inp) {
-  const r = activeRoute;
-  const v = inp.grip ? 0 : curve(inp.tf - inp.tb) * S.maxRouteSpeed;
-  state.routeS = clamp(state.routeS + v * dt, 0, r.total);
-  state.speed = Math.abs(v);
-
-  state.latOffset = clamp(state.latOffset + inp.lx * S.strafeSpeed * dt, -S.routeLimit, S.routeLimit);
-  state.altOffset = clamp(state.altOffset - inp.ly * S.altSpeed * dt, -200, 500);
-  state.yawOffset -= inp.rx * S.turnSpeed * DEG * dt;
-
-  const p = routeAt(r, state.routeS);
-  const perpX = -p.dirZ, perpZ = p.dirX;   // right-hand side of the route direction
-  rig.position.set(
-    p.x + perpX * state.latOffset,
-    p.ground + S.clearance + state.altOffset,
-    p.z + perpZ * state.latOffset
-  );
-  rig.rotation.set(0, p.yaw + state.yawOffset, 0);
-}
-
-function resetPosition() {
-  state.vel.set(0, 0, 0);
-  state.routeS = 0;
-  state.yawOffset = 0;
-  state.latOffset = 0;
-  state.altOffset = 0;
-  if (activeRoute) {
-    const p = routeAt(activeRoute, 0);
-    rig.position.set(p.x, p.ground + S.clearance, p.z);
-    rig.rotation.set(0, p.yaw, 0);
-  } else {
-    rig.position.set(0, S.defaultAlt, 0);
-    rig.rotation.set(0, 0, 0);
-  }
-}
-
-// ---------- render loop ----------
-function frame() {
-  const dt = Math.min(clock.getDelta(), 0.05);
-  const inp = readInput();
-  if (activeRoute) updateRoute(dt, inp); else updateFree(dt, inp);
-  if (tiles) tiles.update();
-  updateHud(dt);
-  renderer.render(scene, camera);
-}
-
-// ---------- enter VR ----------
-$('enter').onclick = async () => {
-  const source = S.tileSource;
-  const token = (source === 'cesium' ? cesiumInput : keyInput).value.trim();
-  if (!token) {
-    return log(source === 'cesium' ? 'Paste your Cesium ion token first.' : 'Paste your Google Maps API key first.');
-  }
-  if (!navigator.xr || !(await navigator.xr.isSessionSupported('immersive-vr'))) {
-    return log('VR is not available here. Open this page in the Meta Quest Browser.');
-  }
-
-  try {
-    renderer.xr.setFramebufferScaleFactor(S.renderScale);
-    createTiles(source, token);
-    setOrigin(activeRoute ? activeRoute.origin : DEFAULT_START);
-    tiles.setCamera(camera);
-    tiles.setResolutionFromRenderer(camera, renderer);
-    resetPosition();
-
-    const session = await navigator.xr.requestSession('immersive-vr', {
-      optionalFeatures: ['local-floor']
-    });
-    await renderer.xr.setSession(session);
-    renderer.setAnimationLoop(frame);
-    $('setup').style.display = 'none';
-    session.addEventListener('end', () => {
-      renderer.setAnimationLoop(null);
-      $('setup').style.display = 'flex';
-      log('Left VR. Adjust settings here, then Enter VR again.');
-    });
-    log('In VR. Right trigger: forward. Left trigger: back.');
-  } catch (err) {
-    log('Could not start VR: ' + err.message);
-  }
-};
-
-// ---------- init ----------
-loadSettings();
-syncSourceUI();
-buildSettingsUI();
-refreshRouteList();
-log('Paste your API key, optionally load GPX routes, then Enter VR.');
+<script type="module" src="./game.js"></script>
+<script>
+  // If the game script fails to load at all, say so instead of leaving dead buttons.
+  window.addEventListener('error', function (e) {
+    var s = document.getElementById('status');
+    if (s && !window.__openFlightReady) s.textContent = 'Could not start: ' + (e.message || 'a script failed to load') + '. Try reloading the page.';
+  }, true);
 </script>
 </body>
 </html>
