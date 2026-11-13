@@ -42,7 +42,7 @@ const DEFAULTS = {
   // shared feel
   smoothing: 2, triggerCurve: 2, deadzone: 0.15, startAlt: 250,
   // targets
-  balloons: 40, drones: 5, ringRadius: 35, fireRate: 12, aimAssist: 4,
+  balloons: 40, drones: 4, jets: 3, missiles: 10, lockTime: 1.5, pullUp: true, ringRadius: 35, fireRate: 12, aimAssist: 4,
   // route
   clearance: 60, showRoute: true,
   // graphics
@@ -88,6 +88,10 @@ const SCHEMA = [
   { group: 'Targets' },
   { key: 'balloons', label: 'Balloons in the sky', min: 0, max: 80, step: 5 },
   { key: 'drones', label: 'Drones', min: 0, max: 12, step: 1 },
+  { key: 'jets', label: 'Enemy jets', min: 0, max: 8, step: 1 },
+  { key: 'missiles', label: 'Missiles carried', min: 2, max: 30, step: 1 },
+  { key: 'lockTime', label: 'Missile lock time (s)', min: 0.5, max: 3, step: 0.25 },
+  { key: 'pullUp', label: 'PULL UP warning', type: 'bool' },
   { key: 'ringRadius', label: 'Ring size (m)', min: 15, max: 80, step: 5 },
   { key: 'fireRate', label: 'Fire rate (shots/s)', min: 3, max: 25, step: 1 },
   { key: 'aimAssist', label: 'Aim assist (degrees, 0 = off)', min: 0, max: 10, step: 0.5 },
@@ -132,6 +136,7 @@ function log(msg) {
 }
 let hudMsg = '', hudMsgUntil = 0;
 function flash(msg, ms = 2500) { hudMsg = msg; hudMsgUntil = performance.now() + ms; }
+function shout(msg) { log(msg); hudMsgUntil = performance.now() + 20000; }
 window.addEventListener('error', e => log('Error: ' + e.message));
 window.addEventListener('unhandledrejection', e => log('Error: ' + (e.reason?.message ?? e.reason)));
 
@@ -182,7 +187,7 @@ scene.add(sea);
 // ====================================================================
 // World state
 // ====================================================================
-const W = { running: false, mode: null, source: 'free', tilesMode: false, origin: { lat: 0, lon: 0 }, placed: false, startY: 0, time: 0 };
+const W = { mapErrors: 0, mapLoaded: 0, mapRootFailed: false, loadStart: 0, running: false, mode: null, source: 'free', tilesMode: false, origin: { lat: 0, lon: 0 }, placed: false, startY: 0, time: 0 };
 const P = { pos: V(), yaw: 0, pitch: 0, roll: 0, speed: 0, vel: V(), railS: 0, railSide: 0, railAlt: 0, railYaw: 0 };
 const G = { score: 0, combo: 0, comboUntil: 0, pops: 0 };
 let route = null;                  // active route (projected)
@@ -429,6 +434,42 @@ let tiles = null, tilesId = null, tilesXr = false, tilesGround = null, tilesGrou
 const groundRay = new THREE.Raycaster();
 groundRay.firstHitOnly = true;
 
+const CESIUM_ASSET = '2275207';
+async function readError(r) {
+  try { const j = await r.clone().json(); return j?.error?.message || j?.message || ''; } catch (e) { return ''; }
+}
+// Ask the map service directly, so we can say exactly what's wrong before flying
+async function checkMap(source, token) {
+  if (source === 'free') return { ok: true, message: 'The free map needs no key.' };
+  if (!token) return { ok: false, message: source === 'cesium' ? 'Paste your Cesium ion token first.' : 'Paste your Google Maps key first.' };
+  const google = async (url, via) => {
+    let r;
+    try { r = await fetch(url); } catch (e) { return { ok: false, message: `Couldn't reach Google's map server${via}. Check the headset is online.` }; }
+    if (r.ok) return { ok: true, message: `Connected. Google 3D tiles are working${via}.` };
+    const why = await readError(r);
+    let hint = '';
+    if (r.status === 403 && /referer|referrer/i.test(why)) hint = ' Your key\'s website restriction is blocking this page. Add this site\'s address to the key in Google Cloud.';
+    else if (r.status === 403 && /not been used|disabled|enable/i.test(why)) hint = ' Turn on the Map Tiles API for this key\'s project in Google Cloud.';
+    else if (r.status === 403 && /billing/i.test(why)) hint = ' The Google project needs billing turned on.';
+    else if (r.status === 429) hint = ' The free monthly allowance has been used up.';
+    else if (r.status === 400 || r.status === 403) hint = ' Check the key was copied in full.';
+    // through Cesium the key is Cesium's, so the fixes above aren't yours to make
+    if (via) hint = r.status === 429 ? ' The free monthly allowance on your Cesium account has been used up.' : ' This is on Cesium\'s side; try again later.';
+    return { ok: false, message: `Google refused the map (error ${r.status})${via}.${hint}${why ? ' Google says: ' + why.slice(0, 160) : ''}` };
+  };
+  if (source === 'google') return google('https://tile.googleapis.com/v1/3dtiles/root.json?key=' + encodeURIComponent(token), '');
+  let r;
+  try { r = await fetch(`https://api.cesium.com/v1/assets/${CESIUM_ASSET}/endpoint?access_token=${encodeURIComponent(token)}`); }
+  catch (e) { return { ok: false, message: "Couldn't reach Cesium ion. Check the headset is online." }; }
+  if (r.status === 401) return { ok: false, message: 'Cesium says the token is not valid. On ion.cesium.com open Access Tokens, copy the Default token in full and paste it again.' };
+  if (r.status === 404 || r.status === 403) return { ok: false, message: 'Your Cesium account does not have Google Photorealistic 3D Tiles yet. On ion.cesium.com open Asset Depot, search "Google Photorealistic 3D Tiles", press "Add to my assets", then try again.' };
+  if (!r.ok) return { ok: false, message: `Cesium ion refused the request (error ${r.status}). ${(await readError(r)).slice(0, 160)}` };
+  let j;
+  try { j = await r.json(); } catch (e) { return { ok: false, message: 'Cesium ion sent back something unexpected. Try again in a minute.' }; }
+  if (!j?.options?.url) return { ok: true, message: 'Connected to Cesium ion.' };
+  return google(j.options.url, ' through Cesium ion');
+}
+
 async function tilesInit(source, token) {
   const id = source + ':' + token;
   if (tiles && tilesId !== id) { geoFrame.remove(tiles.group); tiles.dispose(); tiles = null; }
@@ -436,13 +477,18 @@ async function tilesInit(source, token) {
     const L = await import('./lib/tiles.bundle.js');
     if (source === 'cesium') {
       tiles = new L.TilesRenderer();
-      tiles.registerPlugin(new L.CesiumIonAuthPlugin({ apiToken: token, assetId: '2275207', autoRefreshToken: true }));
+      tiles.registerPlugin(new L.CesiumIonAuthPlugin({ apiToken: token, assetId: CESIUM_ASSET, autoRefreshToken: true }));
     } else {
       tiles = new L.TilesRenderer('https://tile.googleapis.com/v1/3dtiles/root.json');
       tiles.registerPlugin(new L.GoogleCloudAuthPlugin({ apiToken: token, autoRefreshToken: true }));
     }
     tiles.registerPlugin(new L.GLTFExtensionsPlugin({ dracoLoader: new L.DRACOLoader().setDecoderPath('./lib/draco/') }));
-    tiles.addEventListener('load-error', e => log('Map tile error: ' + (e.error?.message ?? 'failed to load') + '. Check the key and its restrictions.'));
+    tiles.addEventListener('load-error', e => {
+      W.mapErrors++;
+      if (!e.tile) W.mapRootFailed = true;
+      if (W.mapErrors <= 3) log('3D map error: ' + (e.error?.message ?? 'failed to load'));
+    });
+    tiles.addEventListener('load-model', () => { W.mapLoaded++; });
     geoFrame.add(tiles.group);
     tilesId = id;
   }
@@ -759,22 +805,25 @@ function makeDrone() {
   targetGroup.add(g);
   return { type: 'drone', mesh: g, hull, r: 11, hp: 3, color: 0xff3355, base: V(), phase: rand(0, 6), orbit: rand(150, 400), fleeUntil: 0, vel: V() };
 }
+const HP = { balloon: 1, drone: 3, jet: 5 };
 function spawnTarget(t, anywhere) {
-  const a = P.yaw + (anywhere ? rand(-Math.PI, Math.PI) : rand(-1.4, 1.4)), d = anywhere ? rand(250, 1900) : rand(900, 2100);
+  const far = t.type === 'jet';
+  const a = P.yaw + (anywhere ? rand(-Math.PI, Math.PI) : rand(-1.4, 1.4)), d = far ? rand(1500, 3200) : anywhere ? rand(250, 1900) : rand(900, 2100);
   const x = P.pos.x - Math.sin(a) * d, z = P.pos.z - Math.cos(a) * d;
   const g = groundHeight(x, z);
   const y = g != null ? Math.max(g + 40, (P.pos.y + g + 150) / 2 + rand(-140, 140)) : P.pos.y + rand(-120, 160);
   t.base.set(x, y, z);
   t.mesh.position.copy(t.base);
-  t.hp = t.type === 'drone' ? 3 : 1;
+  t.hp = HP[t.type];
   t.mesh.visible = true;
+  if (t.type === 'jet') resetJet(t);
 }
 function syncTargets() {
-  const want = S.arcade ? { balloon: S.balloons, drone: S.drones } : { balloon: 0, drone: 0 };
-  for (const type of ['balloon', 'drone']) {
+  const want = S.arcade ? { balloon: S.balloons, drone: S.drones, jet: S.jets } : { balloon: 0, drone: 0, jet: 0 };
+  for (const type of ['balloon', 'drone', 'jet']) {
     let have = targets.filter(t => t.type === type);
     while (have.length > want[type]) { const t = have.pop(); targetGroup.remove(t.mesh); targets.splice(targets.indexOf(t), 1); }
-    while (have.length < want[type]) { const t = type === 'balloon' ? makeBalloon() : makeDrone(); spawnTarget(t, true); targets.push(t); have.push(t); }
+    while (have.length < want[type]) { const t = type === 'balloon' ? makeBalloon() : type === 'drone' ? makeDrone() : makeJet(); spawnTarget(t, true); targets.push(t); have.push(t); }
   }
 }
 function addScore(points, label) {
@@ -785,9 +834,11 @@ function addScore(points, label) {
   G.score += points * mult;
   flash(`${label} +${points * mult}${mult > 1 ? '  (x' + mult + ' combo)' : ''}`, 1800);
 }
-function killTarget(t, rammed) {
+function killTarget(t, rammed, how) {
+  if (t.type !== 'balloon' || how === 'missile') explode(t.mesh.position, t.type !== 'balloon');
   burst(t.mesh.position, t.color, t.type === 'drone' ? 70 : 28, t.type === 'drone' ? 60 : 30);
-  if (t.type === 'drone') { sfx.boom(); addScore(1000, 'Drone down!'); buzz('left', 1, 160); buzz('right', 1, 160); }
+  if (t.type === 'jet') { sfx.boom(); addScore(how === 'missile' ? 1500 : 2000, how === 'missile' ? 'Fox two, splash one!' : 'Jet down with guns!'); buzz('left', 1, 220); buzz('right', 1, 220); }
+  else if (t.type === 'drone') { sfx.boom(); addScore(1000, 'Drone down!'); buzz('left', 1, 160); buzz('right', 1, 160); }
   else { sfx.pop(); addScore(rammed ? 50 : (t.gold ? 500 : 100), rammed ? 'Rammed!' : (t.gold ? 'Gold balloon!' : 'Pop!')); buzz('left', 0.5, 50); }
   G.pops++;
   spawnTarget(t, false);
@@ -796,7 +847,8 @@ function updateTargets(dt) {
   syncTargets();
   for (const t of targets) {
     const m = t.mesh;
-    if (t.type === 'balloon') {
+    if (t.type === 'jet') updateJet(t, dt);
+    else if (t.type === 'balloon') {
       m.position.y = t.base.y + Math.sin(W.time * 0.8 + t.phase) * 6;
       t.vel.set(0, 0, 0);
     } else {
@@ -808,8 +860,346 @@ function updateTargets(dt) {
       m.rotation.y += 2 * dt;
     }
     const d = m.position.distanceTo(planePoint);
-    if (d > 3000) spawnTarget(t, false);
+    if (d > (t.type === 'jet' ? 5000 : 3000)) spawnTarget(t, false);
     else if (d < t.r + 4 && W.placed) killTarget(t, true);
+  }
+}
+
+// ====================================================================
+// Enemy jets, homing missiles, lock-on, smoke, explosions, PULL UP
+//
+// Ported from web-flight-simulator by Dimar Tarmizi
+// https://github.com/dimartarmizi/web-flight-simulator
+//   enemy flight AI ............ src/systems/npcSystem.js
+//   missile homing, smoke trail,
+//   flame glow ................. src/weapon/missile.js
+//   lock-on rules .............. src/systems/weaponSystem.js
+//   explosion look ............. src/utils/particles.js
+//   pull-up rule ............... src/main.js (checkGPWS)
+// Rewritten from CesiumJS coordinates to this game's local metres and scaled
+// to its slower planes. The F-15 model and sound files were not copied.
+/*
+ * Copyright (c) 2026 Dimar Tarmizi
+ * Licensed for non-commercial use only. Commercial use requires a separate
+ * commercial license. See LICENSE-web-flight-simulator.txt for
+ * details or contact dimartarmizi@email.com
+ */
+// ====================================================================
+const wrapAngle = a => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
+
+// soft round glow, the same gradient as the original missile flame
+const glowTex = (() => {
+  const n = 128, c = document.createElement('canvas'); c.width = c.height = n;
+  const x = c.getContext('2d'), g = x.createRadialGradient(n / 2, n / 2, 0, n / 2, n / 2, n / 2);
+  g.addColorStop(0.0, 'rgba(255,255,255,1)'); g.addColorStop(0.18, 'rgba(255,245,200,1)');
+  g.addColorStop(0.38, 'rgba(255,160,30,0.95)'); g.addColorStop(0.62, 'rgba(220,60,10,0.6)'); g.addColorStop(1.0, 'rgba(0,0,0,0)');
+  x.fillStyle = g; x.fillRect(0, 0, n, n);
+  return new THREE.CanvasTexture(c);
+})();
+const puffTex = (() => {
+  const n = 64, c = document.createElement('canvas'); c.width = c.height = n;
+  const x = c.getContext('2d'), g = x.createRadialGradient(n / 2, n / 2, 0, n / 2, n / 2, n / 2);
+  g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.5, 'rgba(255,255,255,0.6)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = g; x.fillRect(0, 0, n, n);
+  return new THREE.CanvasTexture(c);
+})();
+const glowMaterial = () => new THREE.SpriteMaterial({ map: glowTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+
+// ---- enemy jets (built from shapes; the original's F-15 model is not ours to copy) ----
+function makeJet() {
+  const g = new THREE.Group();
+  const grey = new THREE.MeshLambertMaterial({ color: 0x66717c, fog: false }), dark = new THREE.MeshLambertMaterial({ color: 0x262d33, fog: false }),
+    red = new THREE.MeshBasicMaterial({ color: 0xff3b2e, fog: false });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.45, 9, 10), grey); body.rotation.x = Math.PI / 2; g.add(body);
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.55, 2.4, 10), grey); nose.rotation.x = -Math.PI / 2; nose.position.z = -5.7; g.add(nose);
+  const wingShape = new THREE.Shape(); wingShape.moveTo(0, -2.2); wingShape.lineTo(4.6, 1.4); wingShape.lineTo(4.6, 2.4); wingShape.lineTo(0, 2.6); wingShape.lineTo(0, -2.2);
+  const wingGeo = new THREE.ExtrudeGeometry(wingShape, { depth: 0.14, bevelEnabled: false }); wingGeo.rotateX(Math.PI / 2);
+  const wR = new THREE.Mesh(wingGeo, grey); wR.position.y = 0.07; g.add(wR);
+  const wL = wR.clone(); wL.scale.x = -1; g.add(wL);
+  for (const side of [-1, 1]) {
+    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.18, 1.1), red); tip.position.set(side * 4.6, 0, 1.9); g.add(tip);
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.2, 1.6), grey); fin.position.set(side * 0.9, 1.1, 3.7); fin.rotation.z = -side * 0.25; g.add(fin);
+    const stab = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.1, 1.3), grey); stab.position.set(side * 1.6, 0, 4.1); g.add(stab);
+  }
+  const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 8), dark); canopy.scale.set(0.9, 0.75, 2.2); canopy.position.set(0, 0.5, -3); g.add(canopy);
+  const flame = new THREE.Sprite(glowMaterial()); flame.position.set(0, 0, 4.9); flame.scale.setScalar(2.4); g.add(flame);
+  g.scale.setScalar(1.6);
+  targetGroup.add(g);
+  return { type: 'jet', mesh: g, flame, r: 13, hp: HP.jet, color: 0xff8a2a, base: V(), vel: V(), fleeUntil: 0,
+    yaw: 0, pitch: 0, roll: 0, speed: 70, tYaw: 0, tPitch: 0, timer: 0, tcheck: 0, boost: false, throttle: 0.8 };
+}
+function resetJet(t) {
+  t.yaw = rand(-Math.PI, Math.PI); t.tYaw = t.yaw; t.pitch = t.tPitch = t.roll = 0;
+  t.timer = rand(3, 8); t.tcheck = rand(0, 0.5); t.boost = false; t.throttle = rand(0.6, 1); t.speed = 60;
+}
+// npcSystem.update: wander every 8-23 s, climb hard when low, bank into turns
+function updateJet(t, dt) {
+  const m = t.mesh;
+  t.timer -= dt; t.tcheck -= dt;
+  const toPlayer = Math.atan2(-(P.pos.x - m.position.x), -(P.pos.z - m.position.z));
+  const dist = Math.hypot(P.pos.x - m.position.x, P.pos.z - m.position.z);
+  if (t.timer <= 0) {
+    // the original only wanders; here jets also swing back towards you now and then so the fight stays close
+    t.tYaw = Math.random() < 0.45 ? toPlayer + rand(-0.6, 0.6) : t.yaw + rand(-60, 60) * DEG;
+    t.tPitch = rand(-12.5, 12.5) * DEG * 0.5;
+    t.timer = rand(8, 23) * 0.5;
+    t.boost = Math.random() > 0.7;
+    t.throttle = rand(0.6, 1);
+  }
+  if (dist > 2500) t.tYaw = toPlayer;
+  if (W.time < t.fleeUntil) { t.boost = true; t.throttle = 1; }
+  if (t.tcheck <= 0) {
+    t.tcheck = 0.5;
+    const g = groundHeight(m.position.x, m.position.z);
+    if (g != null) {
+      const agl = m.position.y - g;
+      if (agl < 160) { t.tPitch = Math.max(t.tPitch, 25 * DEG); t.boost = true; t.throttle = 1; if (agl < 50) t.tPitch = 45 * DEG; }
+      else if (agl > 900) t.tPitch = Math.min(t.tPitch, -6 * DEG);
+    }
+  }
+  const diff = wrapAngle(t.tYaw - t.yaw);
+  const maxTurn = (t.boost ? 90 : 30) * DEG * dt;
+  t.yaw = wrapAngle(t.yaw + clamp(diff, -maxTurn, maxTurn));
+  t.pitch += (t.tPitch - t.pitch) * dt * 0.6;
+  const wantRoll = Math.abs(diff) > 0.5 * DEG ? Math.sign(diff) * 75 * DEG * Math.min(1, Math.abs(diff) / (45 * DEG)) : 0;
+  t.roll = clamp(t.roll + (wantRoll - t.roll) * Math.min(1, dt * 3), -80 * DEG, 80 * DEG);
+  t.speed = damp(t.speed, (t.boost ? 105 : 75) * t.throttle, 1.5, dt);
+  t.vel.set(-Math.sin(t.yaw) * Math.cos(t.pitch), Math.sin(t.pitch), -Math.cos(t.yaw) * Math.cos(t.pitch)).multiplyScalar(t.speed);
+  m.position.addScaledVector(t.vel, dt);
+  m.rotation.set(t.pitch, t.yaw, t.roll, 'YXZ');
+  const f = 0.8 + Math.random() * 0.4;
+  t.flame.scale.setScalar((t.boost ? 3.4 : 2.2) * f);
+}
+
+// ---- smoke puffs (missile trails and explosion smoke) ----
+const SMOKE_N = 160;
+const smoke = (() => {
+  const list = [];
+  for (let i = 0; i < SMOKE_N; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: puffTex, transparent: true, depthWrite: false, opacity: 0 }));
+    s.visible = false; scene.add(s);
+    list.push({ s, life: 0, max: 1, size: 1, grow: 15, vy: 0 });
+  }
+  return { list, next: 0 };
+})();
+function puff(p, size, life, gray, grow = 15, vy = 0) {
+  const o = smoke.list[smoke.next]; smoke.next = (smoke.next + 1) % SMOKE_N;
+  o.s.position.copy(p); o.life = o.max = life; o.size = size * (0.8 + Math.random() * 0.5); o.grow = grow; o.vy = vy;
+  o.s.material.color.setScalar(gray); o.s.visible = true;
+}
+function updateSmoke(dt) {
+  for (const o of smoke.list) {
+    if (o.life <= 0) continue;
+    o.life -= dt;
+    if (o.life <= 0) { o.s.visible = false; continue; }
+    const k = 1 - o.life / o.max;
+    o.s.scale.setScalar(o.size * (1 + k * o.grow * 0.25));   // missile.js: grows as it ages
+    o.s.material.opacity = (o.life / o.max) * 0.5;            // missile.js: fades to nothing
+    o.s.position.y += o.vy * dt;
+  }
+}
+
+// ---- explosions: white flash, orange fireball, sparks, then smoke (particles.js look) ----
+const FIRE_N = 500;
+const fx = (() => {
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(FIRE_N * 3).fill(-1e6), col = new Float32Array(FIRE_N * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const pts = new THREE.Points(geo, new THREE.PointsMaterial({ size: 5, map: glowTex, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+  pts.frustumCulled = false; scene.add(pts);
+  return { pts, pos, col, vel: new Float32Array(FIRE_N * 3), life: new Float32Array(FIRE_N), max: new Float32Array(FIRE_N), base: new Float32Array(FIRE_N * 3), next: 0 };
+})();
+const flashes = Array.from({ length: 6 }, () => {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 10), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+  m.visible = false; scene.add(m);
+  return { m, life: 0, max: 1, size: 1 };
+});
+let flashNext = 0;
+const _c = new THREE.Color();
+function explode(p, big) {
+  const f = flashes[flashNext]; flashNext = (flashNext + 1) % flashes.length;
+  f.m.position.copy(p); f.life = f.max = 0.18 + Math.random() * 0.12; f.size = big ? 6 : 3; f.m.visible = true;
+  const add = (n, speed0, speed1, life0, life1, hue) => {
+    for (let k = 0; k < n; k++) {
+      const i = fx.next; fx.next = (fx.next + 1) % FIRE_N;
+      const h = Math.random() * Math.PI * 2, pt = (Math.random() * 120 - 60) * DEG, sp = speed0 + Math.random() * speed1;
+      fx.pos[i * 3] = p.x; fx.pos[i * 3 + 1] = p.y; fx.pos[i * 3 + 2] = p.z;
+      fx.vel[i * 3] = Math.sin(h) * Math.cos(pt) * sp; fx.vel[i * 3 + 1] = Math.sin(pt) * sp; fx.vel[i * 3 + 2] = Math.cos(h) * Math.cos(pt) * sp;
+      if (hue) _c.setHSL(0.08 - Math.random() * 0.05, 1, 0.5 + Math.random() * 0.2); else _c.set(0xffffcc);
+      fx.base[i * 3] = _c.r; fx.base[i * 3 + 1] = _c.g; fx.base[i * 3 + 2] = _c.b;
+      fx.life[i] = fx.max[i] = life0 + Math.random() * life1;
+    }
+  };
+  add(big ? 64 : 36, big ? 18 : 10, big ? 60 : 36, big ? 0.9 : 0.6, big ? 1.4 : 0.8, true);   // fireball
+  add(big ? 32 : 18, big ? 36 : 18, big ? 120 : 60, 0.18, 0.36, false);                         // sparks
+  for (let k = 0; k < (big ? 10 : 4); k++) puff(_v.copy(p).add(V().set(rand(-8, 8), rand(-4, 8), rand(-8, 8))), big ? 14 : 7, rand(2.5, 4), rand(0.15, 0.35), 6, 4);
+}
+function updateFire(dt) {
+  for (const f of flashes) {
+    if (f.life <= 0) continue;
+    f.life -= dt;
+    if (f.life <= 0) { f.m.visible = false; continue; }
+    const k = 1 - f.life / f.max;
+    f.m.scale.setScalar(f.size * (1 + k * 5)); f.m.material.opacity = f.life / f.max;
+  }
+  for (let i = 0; i < FIRE_N; i++) {
+    if (fx.life[i] <= 0) continue;
+    fx.life[i] -= dt;
+    if (fx.life[i] <= 0) { fx.pos[i * 3 + 1] = -1e6; continue; }
+    const a = fx.life[i] / fx.max[i];
+    fx.vel[i * 3] *= 0.97; fx.vel[i * 3 + 1] = fx.vel[i * 3 + 1] * 0.97 - 3 * dt; fx.vel[i * 3 + 2] *= 0.97;
+    for (let j = 0; j < 3; j++) { fx.pos[i * 3 + j] += fx.vel[i * 3 + j] * dt; fx.col[i * 3 + j] = fx.base[i * 3 + j] * a; }
+  }
+  fx.pts.geometry.attributes.position.needsUpdate = true;
+  fx.pts.geometry.attributes.color.needsUpdate = true;
+}
+
+// ---- lock-on (weaponSystem.js: closest target within ~10 degrees, hold it to lock) ----
+const LOCK = { status: 'NONE', target: null, time: 0, beep: 0 };
+const lockDir = V();
+const lockBox = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false, transparent: true, fog: false }));
+  s.renderOrder = 997; s.visible = false; scene.add(s);
+  s.userData.ctx = c.getContext('2d'); s.userData.state = '';
+  return s;
+})();
+function drawLockBox(state, k) {
+  const x = lockBox.userData.ctx, key = state + Math.round(k * 10);
+  if (lockBox.userData.state === key) return;
+  lockBox.userData.state = key;
+  x.clearRect(0, 0, 128, 128);
+  x.strokeStyle = state === 'LOCKED' ? '#ff3030' : '#ffe04a'; x.lineWidth = 8;
+  const m = state === 'LOCKED' ? 14 : 14 + (1 - k) * 30, L = 22;
+  for (const [cx, cy, dx, dy] of [[m, m, 1, 1], [128 - m, m, -1, 1], [m, 128 - m, 1, -1], [128 - m, 128 - m, -1, -1]]) {
+    x.beginPath(); x.moveTo(cx, cy + dy * L); x.lineTo(cx, cy); x.lineTo(cx + dx * L, cy); x.stroke();
+  }
+  if (state === 'LOCKED') { x.fillStyle = '#ff3030'; x.font = 'bold 22px sans-serif'; x.textAlign = 'center'; x.fillText('LOCK', 64, 70); }
+  lockBox.material.map.needsUpdate = true;
+}
+function updateLock(dt) {
+  let best = null, bestDot = 0.985;
+  if (S.arcade) for (const t of targets) {
+    if (t.type === 'balloon' || !t.mesh.visible) continue;
+    _v.copy(t.mesh.position).sub(muzzle);
+    const d = _v.length();
+    if (d > 2500 || d < 30) continue;
+    const dot = _v.dot(lockDir) / d;
+    if (dot > bestDot) { bestDot = dot; best = t; }
+  }
+  if (best) {
+    if (LOCK.target === best) LOCK.time += dt; else { LOCK.target = best; LOCK.time = 0; }
+    const was = LOCK.status;
+    LOCK.status = LOCK.time >= S.lockTime ? 'LOCKED' : 'LOCKING';
+    if (was !== 'LOCKED' && LOCK.status === 'LOCKED') { sfx.tone(1600, 1600, 0.25, 'square', 0.12); buzz('left', 0.6, 60); }
+  } else { LOCK.target = null; LOCK.time = 0; LOCK.status = 'NONE'; }
+
+  // the original's tracking and lock tones, synthesised
+  LOCK.beep -= dt;
+  if (LOCK.status === 'LOCKING' && LOCK.beep <= 0) { sfx.tone(980, 980, 0.06, 'square', 0.08); LOCK.beep = 0.25; }
+  if (LOCK.status === 'LOCKED' && LOCK.beep <= 0) { sfx.tone(1600, 1600, 0.09, 'square', 0.07); LOCK.beep = 0.11; }
+
+  lockBox.visible = LOCK.status !== 'NONE';
+  if (lockBox.visible) {
+    const p = LOCK.target.mesh.position;
+    lockBox.position.copy(p);
+    lockBox.scale.setScalar(Math.max(12, p.distanceTo(muzzle) * 0.07));
+    drawLockBox(LOCK.status, clamp(LOCK.time / S.lockTime, 0, 1));
+  }
+}
+
+// ---- missiles (missile.js: homes at 90 deg/s, smoke every 20 m, 10 s fuel) ----
+const missiles = (() => {
+  const list = [];
+  for (let i = 0; i < 6; i++) {
+    const g = new THREE.Group(), inner = new THREE.Group();
+    inner.rotation.x = Math.PI / 2;   // built along +Y like the original, turned so the nose points along +Z for lookAt
+    const R = 0.07, bodyLen = 2.6;
+    inner.add(new THREE.Mesh(new THREE.CylinderGeometry(R, R, bodyLen, 12), new THREE.MeshLambertMaterial({ color: 0xcccccc, fog: false })));
+    const noseG = new THREE.ConeGeometry(R, 0.35, 12); noseG.translate(0, bodyLen / 2 + 0.175, 0);
+    inner.add(new THREE.Mesh(noseG, new THREE.MeshLambertMaterial({ color: 0x333333, fog: false })));
+    const bandG = new THREE.CylinderGeometry(R + 0.001, R + 0.001, 0.15, 12); bandG.translate(0, bodyLen / 2 - 0.4, 0);
+    inner.add(new THREE.Mesh(bandG, new THREE.MeshBasicMaterial({ color: 0xffcc00, fog: false })));
+    const finG = new THREE.BoxGeometry(0.35, 0.4, 0.02); finG.translate(R + 0.175, 0, 0);
+    for (let k = 0; k < 4; k++) { const f = new THREE.Mesh(finG, new THREE.MeshLambertMaterial({ color: 0x444444, fog: false })); f.position.y = -bodyLen / 2 + 0.3; f.rotation.y = k * Math.PI / 2; inner.add(f); }
+    const glow = new THREE.Sprite(glowMaterial()); glow.position.y = -bodyLen / 2 - 0.08; inner.add(glow);
+    inner.scale.setScalar(2.5);
+    g.add(inner); g.visible = false; scene.add(g);
+    list.push({ g, glow, dir: V(), speed: 0, life: 0, target: null, trail: 0 });
+  }
+  return { list, next: 0, cool: 0, ammo: 0, refill: 0 };
+})();
+const _q2 = new THREE.Quaternion(), _qi = new THREE.Quaternion();
+function launchMissile() {
+  if (missiles.cool > 0) return;
+  if (missiles.ammo <= 0) { flash('Out of missiles. They reload over time.', 1500); sfx.tone(220, 200, 0.15, 'square', 0.1); return; }
+  const m = missiles.list[missiles.next]; missiles.next = (missiles.next + 1) % missiles.list.length;
+  m.target = LOCK.status === 'LOCKED' ? LOCK.target : null;   // no lock: it flies straight
+  m.dir.copy(m.target ? lockDir : aimDir);
+  const side = (missiles.ammo % 2 ? 1 : -1) * 3;
+  m.g.position.copy(muzzle).addScaledVector(_v.set(Math.cos(P.yaw), 0, -Math.sin(P.yaw)), side).y -= 2;
+  m.speed = Math.max(40, Math.abs(P.speed)) + 60;
+  m.life = 10; m.trail = 0; m.g.visible = true;
+  missiles.ammo--; missiles.cool = 0.6;
+  sfx.burst(0.9, 600, 0.5); sfx.tone(300, 900, 0.6, 'sawtooth', 0.12);
+  buzz('left', 0.8, 120);
+  flash(m.target ? 'Fox two!' : 'Missile away (no lock)', 1000);
+}
+function updateMissiles(dt, wantLaunch) {
+  missiles.cool -= dt;
+  missiles.refill -= dt;
+  if (missiles.refill <= 0) { missiles.refill = 8; if (missiles.ammo < S.missiles) missiles.ammo++; }
+  if (wantLaunch && S.arcade && W.placed) launchMissile();
+  for (const m of missiles.list) {
+    if (m.life <= 0) continue;
+    m.life -= dt;
+    const t = m.target;
+    if (t && t.mesh.visible) {
+      const desired = _v.copy(t.mesh.position).sub(m.g.position).normalize();
+      const ang = m.dir.angleTo(desired), maxTurn = 90 * DEG * dt;
+      if (ang > 1e-4) { _q2.setFromUnitVectors(m.dir, desired); _qi.identity().slerp(_q2, Math.min(1, maxTurn / ang)); m.dir.applyQuaternion(_qi).normalize(); }
+    }
+    m.speed = Math.min(260, m.speed + 120 * dt);
+    const step = m.speed * dt;
+    const from = _v2.copy(m.g.position);
+    m.g.position.addScaledVector(m.dir, step);
+    m.g.lookAt(_v.copy(m.g.position).add(m.dir));
+    const f = 0.8 + Math.random() * 0.4; m.glow.scale.set(2.2 * f, 2.2 * f, 1);
+    // smoke puff every 20 m, starting small
+    m.trail += step;
+    while (m.trail >= 20) {
+      m.trail -= 20;
+      const launch = Math.min(1, 0.25 + (10 - m.life) / 1.5 * 0.75);
+      puff(_v.copy(m.g.position).addScaledVector(m.dir, -m.trail), 2 * launch, 4, 0.5 + Math.random() * 0.45);
+    }
+    let boom = m.life <= 0;
+    // check the whole path flown this frame, not just the end point, so fast missiles can't skip past
+    for (const tt of targets) {
+      if (!tt.mesh.visible) continue;
+      const c = tt.mesh.position, k = clamp(((c.x - from.x) * m.dir.x + (c.y - from.y) * m.dir.y + (c.z - from.z) * m.dir.z) / step, 0, 1);
+      const dx = from.x + m.dir.x * step * k - c.x, dy = from.y + m.dir.y * step * k - c.y, dz = from.z + m.dir.z * step * k - c.z;
+      if (dx * dx + dy * dy + dz * dz < (tt.r + 10) ** 2) { killTarget(tt, false, 'missile'); boom = true; break; }
+    }
+    const g = groundHeight(m.g.position.x, m.g.position.z);
+    if (!boom && g != null && m.g.position.y < g) boom = true;
+    if (boom) { explode(m.g.position, false); sfx.boom(); m.life = 0; m.g.visible = false; }
+  }
+}
+
+// ---- PULL UP (checkGPWS: diving and low, or sinking fast and low) ----
+const GPWS = { on: false, next: 0 };
+function updatePullUp() {
+  GPWS.on = false;
+  if (!S.pullUp || S.flightStyle !== 'plane' || !W.placed) return;
+  const g = groundHeight(P.pos.x, P.pos.z);
+  if (g == null) return;
+  const agl = P.pos.y - g, vs = P.vel.y;
+  if (P.pitch < -1 * DEG && agl < 300 && (agl < 80 || vs < -20)) GPWS.on = true;
+  if (GPWS.on && W.time >= GPWS.next) {
+    GPWS.next = W.time + 1.8;
+    sfx.tone(620, 620, 0.18, 'square', 0.14); sfx.tone(820, 820, 0.18, 'square', 0.14, 0.22);
+    buzz('right', 0.5, 120);
   }
 }
 
@@ -860,6 +1250,7 @@ function updateAim() {
     if (chase) aimDir.copy(_v).addScaledVector(_v2, 500).sub(muzzle).normalize();   // converge on where the hand points
     else { aimDir.copy(_v2); muzzle.copy(_v); }
   } else noseDir(aimDir);
+  lockDir.copy(aimDir);
 
   // aim assist: snap to the closest target inside a small cone
   if (S.aimAssist > 0) {
@@ -1036,6 +1427,9 @@ function updateHud(dt) {
     c.font = 'bold 30px sans-serif'; c.fillStyle = '#9fd8ff'; c.fillText('SCORE', 34, 44);
     c.font = 'bold 76px sans-serif'; c.fillStyle = '#fff'; c.fillText(String(G.score), 34, 110);
     if (W.time < G.comboUntil && G.combo > 1) { c.font = 'bold 34px sans-serif'; c.fillStyle = '#ffd23a'; c.fillText('COMBO ' + G.combo, 34, 172); }
+    c.font = 'bold 30px sans-serif';
+    c.fillStyle = LOCK.status === 'LOCKED' ? '#ff5a4a' : LOCK.status === 'LOCKING' ? '#ffe04a' : '#cfe6f7';
+    c.fillText(`MSL ${missiles.ammo}${LOCK.status === 'LOCKED' ? '  LOCKED' : LOCK.status === 'LOCKING' ? '  LOCKING' : ''}`, 34, 214);
   }
   c.textAlign = 'right';
   c.font = 'bold 30px sans-serif'; c.fillStyle = '#9fd8ff'; c.fillText('KM/H', w - 34, 44);
@@ -1046,7 +1440,10 @@ function updateHud(dt) {
   // next ring: arrow, distance, timer
   c.textAlign = 'center';
   const gate = course.gates[course.next];
-  if (gate && course.doneAt == null) {
+  if (GPWS.on) {
+    c.fillStyle = Math.floor(W.time * 4) % 2 ? '#ff3030' : '#ffffff';
+    c.font = 'bold 84px sans-serif'; c.fillText('PULL UP', w / 2, 110);
+  } else if (gate && course.doneAt == null) {
     const dx = gate.mesh.position.x - P.pos.x, dz = gate.mesh.position.z - P.pos.z, dy = gate.mesh.position.y - P.pos.y;
     const fwd = -dx * Math.sin(P.yaw) - dz * Math.cos(P.yaw), right = dx * Math.cos(P.yaw) - dz * Math.sin(P.yaw);
     const ang = Math.atan2(right, fwd);
@@ -1064,7 +1461,11 @@ function updateHud(dt) {
   const msg = performance.now() < hudMsgUntil ? hudMsg : (W.placed ? SOURCE_CREDIT[W.source] : 'Loading the world...');
   c.font = (performance.now() < hudMsgUntil ? 'bold 32px' : '24px') + ' sans-serif';
   c.fillStyle = performance.now() < hudMsgUntil ? '#ffe9a8' : '#8fa9ba';
-  c.fillText(msg.slice(0, 62), w / 2, 256);
+  if (msg.length > 62) {
+    const cut = msg.lastIndexOf(' ', 62) > 30 ? msg.lastIndexOf(' ', 62) : 62;
+    c.font = 'bold 26px sans-serif';
+    c.fillText(msg.slice(0, cut), w / 2, 238); c.fillText(msg.slice(cut).trim().slice(0, 70), w / 2, 270);
+  } else c.fillText(msg, w / 2, 256);
   hudTex.needsUpdate = true;
 }
 
@@ -1072,6 +1473,15 @@ function updateHud(dt) {
 // Input
 // ====================================================================
 const keys = new Set();
+let touchMissile = false;
+{
+  const b = document.getElementById('missileBtn');
+  if (b) {
+    b.addEventListener('pointerdown', e => { touchMissile = true; e.stopPropagation(); });
+    const up = () => { touchMissile = false; };
+    b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up); b.addEventListener('pointerleave', up);
+  }
+}
 window.addEventListener('keydown', e => { keys.add(e.code); if (W.running && W.mode === 'screen' && ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault(); });
 window.addEventListener('keyup', e => keys.delete(e.code));
 const touch = { id: null, x0: 0, y0: 0, dx: 0, dy: 0, count: 0 };
@@ -1123,10 +1533,12 @@ function readInput() {
     o.tR = Math.max(k('ShiftLeft'), k('ShiftRight'), touch.count > 0 ? 0.7 : 0);
     o.tL = Math.max(k('Space'), touch.count > 1 ? 1 : 0);
     o.lx = k('KeyE') - k('KeyQ'); o.ly = k('KeyF') - k('KeyR');
-    o.gripL = !!k('KeyX'); o.a = !!k('KeyB'); o.b = !!k('KeyV'); o.y = !!k('KeyT'); o.x = !!k('KeyH');
+    o.gripL = !!k('KeyX'); o.a = !!k('KeyB'); o.b = !!k('KeyV'); o.y = !!k('KeyT'); o.x = !!k('KeyM') || touchMissile;
     o.rx = clamp(o.rx, -1, 1); o.ry = clamp(o.ry, -1, 1);
-    if (W.mode === 'screen' && S.leftTrigger === 'reverse') { o.x = o.x || o.tL > 0.5; o.tL = k('KeyX'); }
   }
+  if (!session) { o.guns = o.tL > 0.4; o.reverse = o.gripL ? 1 : 0; }
+  else if (S.leftTrigger === 'fire') { o.guns = o.tL > 0.4; o.reverse = o.gripL ? 1 : 0; }
+  else { o.guns = o.gripL; o.reverse = o.tL; }
   o.pressed = {};
   for (const n of ['a', 'b', 'x', 'y']) { o.pressed[n] = o[n] && !prevBtn[n]; prevBtn[n] = o[n]; }
   return o;
@@ -1150,7 +1562,7 @@ function handTilt() {
 function updatePlane(dt, inp) {
   let sx = inp.rx, sy = S.invertPitch ? -inp.ry : inp.ry;
   if (S.steer === 'hand' && W.mode === 'vr') { const t = handTilt(); if (t) { sx = t.sx; sy = t.sy; } }
-  const reverse = S.leftTrigger === 'reverse' ? inp.tL : (inp.gripL ? 1 : 0);
+  const reverse = inp.reverse;
   const throttle = curve(inp.tR);
   let target = S.planeIdleSpeed + throttle * (S.planeMaxSpeed - S.planeIdleSpeed);
   if (inp.a) target *= S.boost;
@@ -1178,7 +1590,7 @@ function updateHover(dt, inp) {
   const right = _v2.crossVectors(fwd, UP);
   if (right.lengthSq() < 1e-6) right.set(1, 0, 0);
   right.normalize();
-  const back = S.leftTrigger === 'reverse' ? inp.tL : (inp.gripL ? 1 : 0);
+  const back = inp.reverse;
   const speed = curve(inp.tR - back) * S.hoverSpeed * (inp.a ? S.boost : 1);
   const target = V().copy(fwd).multiplyScalar(speed).addScaledVector(right, inp.lx * S.strafeSpeed).addScaledVector(UP, -inp.ly * S.altSpeed);
   if (inp.gripR) target.set(0, 0, 0);
@@ -1190,7 +1602,7 @@ function updateHover(dt, inp) {
 }
 
 function updateRail(dt, inp) {
-  const back = S.leftTrigger === 'reverse' ? inp.tL : (inp.gripL ? 1 : 0);
+  const back = inp.reverse;
   const v = inp.gripR ? 0 : curve(inp.tR - back) * S.hoverSpeed * (inp.a ? S.boost : 1);
   P.railS = clamp(P.railS + v * dt, 0, route.total);
   P.railSide = clamp(P.railSide + inp.lx * S.strafeSpeed * dt, -400, 400);
@@ -1205,17 +1617,36 @@ function updateRail(dt, inp) {
 }
 
 function respawn() {
+  W.loadStart = W.time;
+  missiles.ammo = S.missiles; missiles.refill = 8;
   P.vel.set(0, 0, 0); P.speed = 0; P.pitch = P.roll = 0; P.railS = P.railSide = P.railAlt = P.railYaw = 0;
   if (route) { const p = routeAt(route, 0); P.pos.set(p.x, 600, p.z); P.yaw = p.yaw; }
   else { P.pos.set(0, 600, 0); P.yaw = 0; }
   W.placed = false;
 }
 
+function useFreeMap(reason) {
+  shout(reason + ' Switched to the free map so you can keep flying.');
+  W.source = 'free'; W.tilesMode = false;
+  geoFrame.visible = false; terrain.group.visible = true; sea.visible = true;
+  scene.fog.near = 2000; scene.fog.far = 20000;
+  terrainReset();
+  if (route) projectRoute(route);
+  buildRouteLine(); respawn(); buildCourse();
+  terrainUpdate(true);
+}
+function watchMap() {
+  if (!W.tilesMode) return;
+  const waited = W.time - W.loadStart;
+  if (W.mapRootFailed) useFreeMap('The 3D map could not load.');
+  else if (waited > 20 && W.mapLoaded === 0) useFreeMap(W.mapErrors ? 'The 3D map tiles failed to load.' : 'The 3D map sent nothing after 20 seconds.');
+}
+
 function placeOnceGroundKnown() {
   if (W.placed) return;
   const g = groundHeight(P.pos.x, P.pos.z);
   // give the map a few seconds; if the ground never arrives, start anyway
-  if (g == null && W.time < (W.tilesMode ? 12 : 6)) return;
+  if (g == null && W.time - W.loadStart < (W.tilesMode ? 15 : 6)) return;
   W.startY = g ?? 0;
   P.pos.y = W.startY + (S.flightStyle === 'rail' ? S.clearance : S.startAlt);
   W.placed = true;
@@ -1268,13 +1699,18 @@ function frame() {
   }
   rig.updateMatrixWorld(true);
 
-  if (W.tilesMode) tilesUpdate(dt); else terrainUpdate(false);
+  if (W.tilesMode) { tilesUpdate(dt); watchMap(); } else terrainUpdate(false);
   placeOnceGroundKnown();
 
   updateWings();
   updateAim();
   updateTargets(dt);
-  updateBullets(dt, W.placed && (S.leftTrigger === 'fire' ? inp.tL > 0.4 || inp.x : inp.x));
+  updateLock(dt);
+  updateBullets(dt, W.placed && inp.guns);
+  updateMissiles(dt, inp.pressed.x);
+  updateSmoke(dt);
+  updateFire(dt);
+  updatePullUp();
   updateCourse(dt);
   updateParticles(dt);
   updateClouds(dt);
@@ -1318,8 +1754,15 @@ async function startGame(mode) {
   }
   sfx.init();
 
+  let mapCheck = { ok: true };
+  if (source !== 'free') {
+    log('Checking the 3D map...');
+    mapCheck = await checkMap(source, token);
+  }
+
   try {
-    W.source = source; W.tilesMode = source !== 'free'; W.mode = mode; W.time = 0;
+    W.source = mapCheck.ok ? source : 'free'; W.tilesMode = W.source !== 'free'; W.mode = mode; W.time = 0;
+    W.mapErrors = 0; W.mapLoaded = 0; W.mapRootFailed = false;
     W.origin = currentOrigin();
     G.score = 0; G.combo = 0; G.pops = 0;
     terrain.imgWarned = false;
@@ -1352,12 +1795,13 @@ async function startGame(mode) {
   } else {
     renderer.domElement.style.display = 'block';
     $('overlay').style.display = 'block';
-    $('hint').textContent = 'Arrows or WASD steer, Shift throttle, Space fire, B boost, V view, T restart. Touch: drag to steer, second finger fires.';
+    $('hint').textContent = 'Arrows/WASD steer, Shift throttle, Space guns, M missile, B boost, V view, T restart. Touch: drag to steer, second finger fires.';
     resize();
     camera.position.set(0, 1.5, 0);
   }
   renderer.setAnimationLoop(frame);
-  log('Flying. Right trigger is the throttle.');
+  if (!mapCheck.ok) shout(mapCheck.message + ' Using the free map for now.');
+  else log('Flying. Right trigger is the throttle.');
 }
 
 function stopGame() {
@@ -1426,7 +1870,8 @@ function buildHelp() {
     <b>Plane</b><br>
     Right trigger: throttle. A: boost. Right grip: stop and hover.<br>
     ${S.steer === 'hand' ? 'Right hand: hold it flat like a toy plane. Bank it to turn, tip it to climb or dive.' : 'Right stick: turn left/right, pull back to climb, push to dive.'}<br>
-    ${fireOnTrigger ? 'Left trigger (or X): fire. Left grip: reverse.' : 'Left trigger: reverse. X: fire.'}<br>
+    ${fireOnTrigger ? 'Left trigger: guns. Left grip: reverse.' : 'Left trigger: reverse. Left grip: guns.'}<br>
+    X: missile. Keep a jet or drone near the red dot until the box turns red and says LOCK, then press X and it chases them down. Without a lock it flies straight. Missiles reload over time.<br>
     ${S.aim === 'hand' ? 'Aim by pointing your left hand. The red dot shows where shots go.' : 'Shots go where the plane points.'}<br>
     Left stick: side-slip and extra lift. B: switch between first person and chase view. Y: back to the start.<br>
     In first person you are the plane. Settings can make the world tilt as you bank, from Off to Full.<br><br>
@@ -1435,7 +1880,8 @@ function buildHelp() {
     <b>Route rail</b> (GPX loaded)<br>
     Right trigger: forward along your route. ${fireOnTrigger ? 'Left grip' : 'Left trigger'}: back along it.<br><br>
     <b>Scoring</b><br>
-    Balloon 100, gold balloon 500, drone 1000 (three hits), ring 250, finishing a course 2000. Quick hits build a combo of up to x8.
+    Balloon 100, gold balloon 500, drone 1000 (three hits), enemy jet 1500 by missile or 2000 with guns only (five hits), ring 250, finishing a course 2000.
+    If you dive too low the dashboard flashes PULL UP. Quick hits build a combo of up to x8.
     With a GPX route loaded the rings follow your track; your best time is saved.`;
 }
 
@@ -1454,6 +1900,8 @@ function syncFlyTab() {
   $('googleBox').classList.toggle('hidden', S.source !== 'google');
   $('cesiumBox').classList.toggle('hidden', S.source !== 'cesium');
   $('keyButtons').classList.toggle('hidden', S.source === 'free');
+  $('testMap').classList.toggle('hidden', S.source === 'free');
+  $('cesiumHelp').classList.toggle('hidden', S.source !== 'cesium');
   $('place').value = S.place;
   $('customBox').classList.toggle('hidden', S.place !== 'custom');
   $('customLat').value = S.customLat; $('customLon').value = S.customLon;
@@ -1467,6 +1915,12 @@ $('customLon').onchange = e => { const v = parseFloat(e.target.value); if (Numbe
 
 $('key').value = recall('gmapsKey') || '';
 $('cesiumKey').value = recall('cesiumToken') || '';
+$('testMap').onclick = async () => {
+  const token = S.source === 'google' ? $('key').value.trim() : $('cesiumKey').value.trim();
+  log('Testing...');
+  const r = await checkMap(S.source, token);
+  log((r.ok ? 'OK: ' : 'Problem: ') + r.message);
+};
 $('save').onclick = () => { store('gmapsKey', $('key').value.trim() || null); store('cesiumToken', $('cesiumKey').value.trim() || null); log('Saved on this device.'); };
 $('forget').onclick = () => { store('gmapsKey', null); store('cesiumToken', null); $('key').value = ''; $('cesiumKey').value = ''; log('Keys removed from this device.'); };
 
@@ -1506,6 +1960,6 @@ buildHelp();
 refreshRouteList();
 syncFlyTab();
 window.__openFlightReady = true;
-window.__game = { W, P, G, S, terrain, course, targets, bullets, groundHeight, startGame, stopGame, parseGpx, routes, setRoute: r => { route = r; } };
+window.__game = { LOCK, missiles, GPWS, W, P, G, S, terrain, course, targets, bullets, groundHeight, startGame, stopGame, parseGpx, routes, setRoute: r => { route = r; } };
 if (navigator.xr) navigator.xr.isSessionSupported('immersive-vr').then(ok => { if (!ok) $('enter').textContent = 'Enter VR (open in the Quest Browser)'; }).catch(() => {});
 log('Pick a place and press Enter VR. The free map needs no key.');

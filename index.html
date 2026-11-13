@@ -49,7 +49,7 @@
 </head>
 <body>
 
-<div id="overlay"><button id="exitBtn" class="sec">Menu</button><span id="hint"></span></div>
+<div id="overlay"><button id="exitBtn" class="sec">Menu</button><button id="missileBtn" class="sec" style="position:fixed;right:12px;bottom:16px;padding:16px 20px">Missile</button><span id="hint"></span></div>
 
 <div id="setup">
   <div id="panel">
@@ -83,6 +83,8 @@
         <button id="save" class="sec">Save key on this device</button>
         <button id="forget" class="sec">Forget keys</button>
       </div>
+      <button id="testMap" class="sec hidden">Test map connection</button>
+      <div id="cesiumHelp" class="note hidden">Cesium setup: sign in at ion.cesium.com, open <b>Asset Depot</b>, search <b>Google Photorealistic 3D Tiles</b> and press <b>Add to my assets</b>. Then copy your <b>Default</b> token from Access Tokens.</div>
 
       <label for="place">Where to fly</label>
       <select id="place"></select>
